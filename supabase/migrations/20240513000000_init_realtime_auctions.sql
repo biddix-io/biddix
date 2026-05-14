@@ -23,6 +23,7 @@ BEGIN;
       id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
       auction_id UUID REFERENCES public.auctions(id) ON DELETE CASCADE,
       title TEXT NOT NULL,
+      image_url TEXT,
       current_bid_amount DECIMAL(12, 2) DEFAULT 0,
       min_increment DECIMAL(12, 2) DEFAULT 1,
       status TEXT DEFAULT 'active' CHECK (status IN ('active', 'paused', 'closed')),

@@ -4,6 +4,7 @@ import { supabase } from '../lib/supabase';
 export type Lot = {
   id: string;
   title: string;
+  image_url: string | null;
   current_bid_amount: number;
   min_increment: number;
   status: 'active' | 'paused' | 'closed';
@@ -25,31 +26,30 @@ export function useAuctionRealtime(lotId: string) {
   const [bids, setBids] = useState<Bid[]>([]);
   const [loading, setLoading] = useState(true);
 
+  const fetchInitialData = useCallback(async () => {
+    const { data: lotData } = await supabase
+      .from('lots')
+      .select('*')
+      .eq('id', lotId)
+      .single();
+
+    const { data: bidsData } = await supabase
+      .from('bids')
+      .select('*')
+      .eq('lot_id', lotId)
+      .order('created_at', { ascending: false })
+      .limit(10);
+
+    if (lotData) setLot(lotData);
+    if (bidsData) setBids(bidsData);
+    setLoading(false);
+  }, [lotId]);
+
   // Fetch initial data
   useEffect(() => {
-    async function fetchInitialData() {
-      setLoading(true);
-
-      const { data: lotData } = await supabase
-        .from('lots')
-        .select('*')
-        .eq('id', lotId)
-        .single();
-
-      const { data: bidsData } = await supabase
-        .from('bids')
-        .select('*')
-        .eq('lot_id', lotId)
-        .order('created_at', { ascending: false })
-        .limit(10);
-
-      if (lotData) setLot(lotData);
-      if (bidsData) setBids(bidsData);
-      setLoading(false);
-    }
-
+    setLoading(true);
     fetchInitialData();
-  }, [lotId]);
+  }, [fetchInitialData]);
 
   // Subscribe to realtime updates
   useEffect(() => {
@@ -99,7 +99,7 @@ export function useAuctionRealtime(lotId: string) {
     return () => {
       supabase.removeChannel(channel);
     };
-  }, [lotId]);
+  }, [lotId, fetchInitialData]);
 
   const placeBid = useCallback(async (bidderId: string, amount: number) => {
     const { error } = await supabase.rpc('place_bid', {

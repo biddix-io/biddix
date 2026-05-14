@@ -1,5 +1,12 @@
-import React, { useState, useEffect } from 'react';
+'use client';
+
+import React, { useState, useEffect, useCallback, useMemo } from 'react';
+import Image from 'next/image';
 import { useAuctionRealtime } from '../hooks/useAuctionRealtime';
+import { Button } from './ui/Button';
+import { Input } from './ui/Input';
+import { Card } from './ui/Card';
+import { Badge } from './ui/Badge';
 
 interface LiveAuctionProps {
   lotId: string;
@@ -9,8 +16,13 @@ interface LiveAuctionProps {
 export const LiveAuction: React.FC<LiveAuctionProps> = ({ lotId, userId }) => {
   const { lot, bids, loading, placeBid } = useAuctionRealtime(lotId);
   const [bidAmount, setBidAmount] = useState<number>(0);
-  const [timeLeft, setTimeLeft] = useState<string>('');
+  const [timeLeft, setTimeLeft] = useState<string>('Calculating...');
   const [error, setError] = useState<string | null>(null);
+  const [isMounted, setIsMounted] = useState(false);
+
+  useEffect(() => {
+    setIsMounted(true);
+  }, []);
 
   // Synchronized countdown timer
   useEffect(() => {
@@ -28,9 +40,10 @@ export const LiveAuction: React.FC<LiveAuctionProps> = ({ lotId, userId }) => {
         clearInterval(timer);
         setTimeLeft('Ended');
       } else {
+        const hours = Math.floor(distance / (1000 * 60 * 60));
         const minutes = Math.floor((distance % (1000 * 60 * 60)) / (1000 * 60));
         const seconds = Math.floor((distance % (1000 * 60)) / 1000);
-        setTimeLeft(`${minutes}m ${seconds}s`);
+        setTimeLeft(`${hours > 0 ? `${hours}h ` : ''}${minutes}m ${seconds}s`);
       }
     }, 1000);
 
@@ -44,7 +57,7 @@ export const LiveAuction: React.FC<LiveAuctionProps> = ({ lotId, userId }) => {
     }
   }, [lot]);
 
-  const handleBid = async (e: React.FormEvent) => {
+  const handleBid = useCallback(async (e: React.FormEvent) => {
     e.preventDefault();
     setError(null);
     try {
@@ -52,60 +65,88 @@ export const LiveAuction: React.FC<LiveAuctionProps> = ({ lotId, userId }) => {
     } catch (err: any) {
       setError(err.message || 'Failed to place bid');
     }
-  };
+  }, [placeBid, userId, bidAmount]);
 
-  if (loading) return <div>Loading auction...</div>;
-  if (!lot) return <div>Lot not found.</div>;
+  const bidHistory = useMemo(() => (
+    <ul className="space-y-1" aria-live="polite">
+      {bids.map((bid) => (
+        <li key={bid.id} className="text-sm border-b border-gray-100 py-2 flex justify-between">
+          <span className="text-gray-600 font-mono text-xs">ID: {bid.bidder_id.slice(0, 8)}...</span>
+          <span className="font-bold text-gray-900">${bid.amount}</span>
+        </li>
+      ))}
+      {bids.length === 0 && <p className="text-gray-400 text-sm italic py-4 text-center">No bids yet. Be the first!</p>}
+    </ul>
+  ), [bids]);
+
+  if (loading || !isMounted) {
+    return <Card className="animate-pulse h-64 flex items-center justify-center text-gray-400">Loading auction...</Card>;
+  }
+
+  if (!lot) {
+    return <Card className="text-center py-12 text-gray-500">Lot not found.</Card>;
+  }
 
   return (
-    <div className="auction-container p-4 border rounded shadow-md">
-      <h1 className="text-2xl font-bold mb-4">{lot.title}</h1>
+    <Card className="auction-container shadow-md">
+      {lot.image_url && (
+        <div className="relative w-full h-48 sm:h-64 mb-4 rounded-md overflow-hidden bg-gray-100">
+          <Image
+            src={lot.image_url}
+            alt={lot.title}
+            fill
+            className="object-cover"
+            priority // Optimize for LCP
+            sizes="(max-width: 768px) 100vw, (max-width: 1200px) 50vw, 33vw"
+          />
+        </div>
+      )}
+      <div className="flex justify-between items-start mb-4">
+        <h1 className="text-2xl font-bold text-gray-900">{lot.title}</h1>
+        <Badge variant={lot.status === 'active' ? 'success' : lot.status === 'paused' ? 'warning' : 'gray'}>
+          {lot.status.toUpperCase()}
+        </Badge>
+      </div>
 
       <div className="status-grid grid grid-cols-2 gap-4 mb-6">
-        <div className="stat-card p-3 bg-gray-100 rounded">
-          <p className="text-sm text-gray-600">Current Bid</p>
-          <p className="text-xl font-semibold">${lot.current_bid_amount}</p>
+        <div className="stat-card p-3 bg-gray-50 rounded border">
+          <p className="text-xs text-gray-500 uppercase font-bold tracking-wider">Current Bid</p>
+          <p className="text-2xl font-bold text-gray-900">${lot.current_bid_amount}</p>
         </div>
-        <div className="stat-card p-3 bg-gray-100 rounded">
-          <p className="text-sm text-gray-600">Time Left</p>
-          <p className="text-xl font-semibold text-red-600">{timeLeft}</p>
+        <div className="stat-card p-3 bg-gray-50 rounded border">
+          <p className="text-xs text-gray-500 uppercase font-bold tracking-wider">Time Left</p>
+          <p className="text-2xl font-bold text-red-600" aria-label={`Time remaining: ${timeLeft}`}>{timeLeft}</p>
         </div>
       </div>
 
       {lot.status === 'active' && (
         <form onSubmit={handleBid} className="bidding-panel mb-6">
-          <div className="flex gap-2">
-            <input
+          <div className="flex flex-col sm:flex-row gap-2 items-end">
+            <Input
+              label="Place your bid"
               type="number"
               value={bidAmount}
               onChange={(e) => setBidAmount(Number(e.target.value))}
               min={Number(lot.current_bid_amount) + Number(lot.min_increment)}
               step={lot.min_increment}
-              className="flex-1 p-2 border rounded"
+              error={error || undefined}
+              required
             />
-            <button
+            <Button
               type="submit"
-              className="bg-blue-600 text-white px-6 py-2 rounded hover:bg-blue-700 transition"
+              className="w-full sm:w-auto"
+              aria-label="Place Bid"
             >
               Place Bid
-            </button>
+            </Button>
           </div>
-          {error && <p className="text-red-500 text-sm mt-1">{error}</p>}
         </form>
       )}
 
       <div className="bid-history">
-        <h3 className="font-semibold mb-2">Recent Bids</h3>
-        <ul className="space-y-1">
-          {bids.map((bid) => (
-            <li key={bid.id} className="text-sm border-b py-1 flex justify-between">
-              <span>User {bid.bidder_id.slice(0, 8)}...</span>
-              <span className="font-medium">${bid.amount}</span>
-            </li>
-          ))}
-          {bids.length === 0 && <p className="text-gray-500 text-sm italic">No bids yet.</p>}
-        </ul>
+        <h3 className="font-bold text-sm text-gray-700 uppercase tracking-wider mb-2">Recent Bids</h3>
+        {bidHistory}
       </div>
-    </div>
+    </Card>
   );
 };

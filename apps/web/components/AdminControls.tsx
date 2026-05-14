@@ -1,5 +1,10 @@
+'use client';
+
 import React from 'react';
 import { useAuctionRealtime } from '../hooks/useAuctionRealtime';
+import { Button } from './ui/Button';
+import { Card } from './ui/Card';
+import { Badge } from './ui/Badge';
 
 interface AdminControlsProps {
   lotId: string;
@@ -11,37 +16,42 @@ export const AdminControls: React.FC<AdminControlsProps> = ({ lotId }) => {
   if (loading || !lot) return null;
 
   return (
-    <div className="admin-controls p-4 border rounded bg-gray-50 mt-4">
-      <h3 className="font-bold mb-2">Admin Controls</h3>
-      <div className="flex gap-2">
+    <Card title="Admin Controls" className="bg-gray-50 border-dashed">
+      <div className="flex flex-wrap gap-2">
         {lot.status === 'active' && (
-          <button
+          <Button
+            variant="warning"
             onClick={() => updateStatus('paused')}
-            className="bg-yellow-500 text-white px-4 py-2 rounded hover:bg-yellow-600 transition"
+            aria-label="Pause lot"
           >
             Pause Lot
-          </button>
+          </Button>
         )}
         {lot.status === 'paused' && (
-          <button
+          <Button
+            variant="primary"
             onClick={() => updateStatus('active')}
-            className="bg-green-600 text-white px-4 py-2 rounded hover:bg-green-700 transition"
+            aria-label="Resume lot"
           >
             Resume Lot
-          </button>
+          </Button>
         )}
         {lot.status !== 'closed' && (
-          <button
+          <Button
+            variant="danger"
             onClick={() => updateStatus('closed')}
-            className="bg-red-600 text-white px-4 py-2 rounded hover:bg-red-700 transition"
+            aria-label="Close lot"
           >
             Close Lot
-          </button>
+          </Button>
         )}
       </div>
-      <p className="text-xs text-gray-500 mt-2">
-        Current Status: <span className="uppercase font-semibold">{lot.status}</span>
-      </p>
-    </div>
+      <div className="mt-3 flex items-center gap-2">
+        <span className="text-xs text-gray-500 uppercase font-bold tracking-wider">Current Status:</span>
+        <Badge variant={lot.status === 'active' ? 'success' : lot.status === 'paused' ? 'warning' : 'gray'}>
+          {lot.status.toUpperCase()}
+        </Badge>
+      </div>
+    </Card>
   );
 };

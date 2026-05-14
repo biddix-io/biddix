@@ -2,6 +2,7 @@
 
 import { LiveAuction } from '../components/LiveAuction';
 import { AdminControls } from '../components/AdminControls';
+import { ErrorBoundary } from '../components/ErrorBoundary';
 
 export default function AuctionPage() {
   // Demo IDs
@@ -16,7 +17,9 @@ export default function AuctionPage() {
           <p className="text-gray-600 mt-2">MVP Real-time Bidding Demo</p>
         </header>
 
-        <LiveAuction lotId={lotId} userId={userId} />
+        <ErrorBoundary>
+          <LiveAuction lotId={lotId} userId={userId} />
+        </ErrorBoundary>
 
         <div className="border-t pt-8">
           <AdminControls lotId={lotId} />
