@@ -1,5 +1,6 @@
-import { useEffect, useState, useCallback } from 'react';
+import { useEffect, useState, useCallback, useRef } from 'react';
 import { supabase } from '../lib/supabase';
+import { RealtimeChannel } from '@supabase/supabase-js';
 
 export type Lot = {
   id: string;
@@ -21,28 +22,32 @@ export type Bid = {
   created_at: string;
 };
 
-export function useAuctionRealtime(lotId: string) {
+export type ConnectionState = 'INITIALIZING' | 'CONNECTED' | 'DISCONNECTED' | 'ERROR';
+
+export function useAuctionRealtime(lotId: string, userId?: string) {
   const [lot, setLot] = useState<Lot | null>(null);
   const [bids, setBids] = useState<Bid[]>([]);
   const [loading, setLoading] = useState(true);
+  const [connectionState, setConnectionState] = useState<ConnectionState>('INITIALIZING');
+  const [onlineBidders, setOnlineBidders] = useState(0);
+
+  const channelRef = useRef<RealtimeChannel | null>(null);
 
   const fetchInitialData = useCallback(async () => {
-    const { data: lotData } = await supabase
-      .from('lots')
-      .select('*')
-      .eq('id', lotId)
-      .single();
+    try {
+      const [lotRes, bidsRes] = await Promise.all([
+        supabase.from('lots').select('*').eq('id', lotId).single(),
+        supabase.from('bids').select('*').eq('lot_id', lotId).order('created_at', { ascending: false }).limit(10)
+      ]);
 
-    const { data: bidsData } = await supabase
-      .from('bids')
-      .select('*')
-      .eq('lot_id', lotId)
-      .order('created_at', { ascending: false })
-      .limit(10);
-
-    if (lotData) setLot(lotData);
-    if (bidsData) setBids(bidsData);
-    setLoading(false);
+      if (lotRes.data) setLot(lotRes.data);
+      if (bidsRes.data) setBids(bidsRes.data);
+    } catch (err) {
+      console.error('Error fetching initial auction data:', err);
+      setConnectionState('ERROR');
+    } finally {
+      setLoading(false);
+    }
   }, [lotId]);
 
   // Fetch initial data
@@ -51,10 +56,19 @@ export function useAuctionRealtime(lotId: string) {
     fetchInitialData();
   }, [fetchInitialData]);
 
-  // Subscribe to realtime updates
+  // Subscribe to realtime updates and presence
   useEffect(() => {
-    const channel = supabase
-      .channel(`lot:${lotId}`)
+    if (!lotId) return;
+
+    const channel = supabase.channel(`lot:${lotId}`, {
+      config: {
+        presence: {
+          key: userId || 'anonymous',
+        },
+      },
+    });
+
+    channel
       .on(
         'postgres_changes',
         {
@@ -67,7 +81,7 @@ export function useAuctionRealtime(lotId: string) {
           const newLot = payload.new as Lot;
           setLot((currentLot) => {
             if (!currentLot) return newLot;
-            // Only update if the new data is actually newer
+            // Optimistic update check: only update if data is newer or same (for sync)
             if (new Date(newLot.updated_at) < new Date(currentLot.updated_at)) {
               return currentLot;
             }
@@ -86,20 +100,34 @@ export function useAuctionRealtime(lotId: string) {
         (payload) => {
           const newBid = payload.new as Bid;
           setBids((currentBids) => {
-            // Idempotency check: prevent duplicate bid events
-            if (currentBids.some((b) => b.id === newBid.id)) {
-              return currentBids;
-            }
+            if (currentBids.some((b) => b.id === newBid.id)) return currentBids;
             return [newBid, ...currentBids].slice(0, 10);
           });
         }
       )
-      .subscribe();
+      .on('presence', { event: 'sync' }, () => {
+        const state = channel.presenceState();
+        setOnlineBidders(Object.keys(state).length);
+      })
+      .subscribe((status) => {
+        if (status === 'SUBSCRIBED') {
+          setConnectionState('CONNECTED');
+          channel.track({ online_at: new Date().toISOString() });
+        } else if (status === 'CLOSED' || status === 'CHANNEL_ERROR') {
+          setConnectionState('ERROR');
+          // Try to re-sync if we were disconnected
+          fetchInitialData();
+        } else if (status === 'TIMED_OUT') {
+          setConnectionState('DISCONNECTED');
+        }
+      });
+
+    channelRef.current = channel;
 
     return () => {
       supabase.removeChannel(channel);
     };
-  }, [lotId, fetchInitialData]);
+  }, [lotId, userId, fetchInitialData]);
 
   const placeBid = useCallback(async (bidderId: string, amount: number) => {
     const { error } = await supabase.rpc('place_bid', {
@@ -120,5 +148,13 @@ export function useAuctionRealtime(lotId: string) {
     if (error) throw error;
   }, [lotId]);
 
-  return { lot, bids, loading, placeBid, updateStatus };
+  return {
+    lot,
+    bids,
+    loading,
+    connectionState,
+    onlineBidders,
+    placeBid,
+    updateStatus
+  };
 }

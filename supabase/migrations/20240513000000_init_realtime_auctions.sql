@@ -1,8 +1,6 @@
 -- Enable Realtime for the public schema
--- Note: In a real Supabase environment, this might be done via the dashboard or a specific SQL command
--- but for the migration we'll use the standard way to add tables to the realtime publication.
 BEGIN;
-  -- Create publication if it doesn't exist (Supabase usually has one called supabase_realtime)
+  -- Create publication if it doesn't exist
   DO $$
   BEGIN
     IF NOT EXISTS (SELECT 1 FROM pg_publication WHERE pubname = 'supabase_realtime') THEN
@@ -11,7 +9,7 @@ BEGIN;
   END $$;
 
   -- Create Auctions table
-  CREATE TABLE public.auctions (
+  CREATE TABLE IF NOT EXISTS public.auctions (
       id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
       title TEXT NOT NULL,
       description TEXT,
@@ -19,7 +17,7 @@ BEGIN;
   );
 
   -- Create Lots table
-  CREATE TABLE public.lots (
+  CREATE TABLE IF NOT EXISTS public.lots (
       id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
       auction_id UUID REFERENCES public.auctions(id) ON DELETE CASCADE,
       title TEXT NOT NULL,
@@ -34,7 +32,7 @@ BEGIN;
   );
 
   -- Create Bids table
-  CREATE TABLE public.bids (
+  CREATE TABLE IF NOT EXISTS public.bids (
       id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
       lot_id UUID REFERENCES public.lots(id) ON DELETE CASCADE,
       bidder_id UUID NOT NULL,
@@ -42,11 +40,28 @@ BEGIN;
       created_at TIMESTAMPTZ DEFAULT now()
   );
 
-  -- Add tables to Realtime publication
-  ALTER PUBLICATION supabase_realtime ADD TABLE public.lots;
-  ALTER PUBLICATION supabase_realtime ADD TABLE public.bids;
+  -- Enable Row Level Security
+  ALTER TABLE public.auctions ENABLE ROW LEVEL SECURITY;
+  ALTER TABLE public.lots ENABLE ROW LEVEL SECURITY;
+  ALTER TABLE public.bids ENABLE ROW LEVEL SECURITY;
 
-  -- Function to place a bid with server-side validation
+  -- Public read access
+  CREATE POLICY "Allow public read access on auctions" ON public.auctions FOR SELECT USING (true);
+  CREATE POLICY "Allow public read access on lots" ON public.lots FOR SELECT USING (true);
+  CREATE POLICY "Allow public read access on bids" ON public.bids FOR SELECT USING (true);
+
+  -- Add tables to Realtime publication
+  DO $$
+  BEGIN
+    IF NOT EXISTS (SELECT 1 FROM pg_publication_tables WHERE pubname = 'supabase_realtime' AND tablename = 'lots') THEN
+      ALTER PUBLICATION supabase_realtime ADD TABLE public.lots;
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM pg_publication_tables WHERE pubname = 'supabase_realtime' AND tablename = 'bids') THEN
+      ALTER PUBLICATION supabase_realtime ADD TABLE public.bids;
+    END IF;
+  END $$;
+
+  -- Function to place a bid with server-side validation and authorization
   CREATE OR REPLACE FUNCTION public.place_bid(p_lot_id UUID, p_bidder_id UUID, p_amount DECIMAL)
   RETURNS void AS $$
   DECLARE
@@ -55,6 +70,11 @@ BEGIN;
       v_status TEXT;
       v_ends_at TIMESTAMPTZ;
   BEGIN
+      -- AUTHORIZATION CHECK: Ensure bidder is the authenticated user
+      IF p_bidder_id <> auth.uid() THEN
+          RAISE EXCEPTION 'Not authorized to bid on behalf of others';
+      END IF;
+
       -- Select lot details with a lock to prevent race conditions
       SELECT current_bid_amount, min_increment, status, ends_at
       INTO v_current_bid, v_min_increment, v_status, v_ends_at
@@ -87,16 +107,23 @@ BEGIN;
       INSERT INTO public.bids (lot_id, bidder_id, amount)
       VALUES (p_lot_id, p_bidder_id, p_amount);
   END;
-  $$ LANGUAGE plpgsql;
+  $$ LANGUAGE plpgsql SECURITY DEFINER;
 
-  -- Admin functions
+  -- Admin functions with authorization check
   CREATE OR REPLACE FUNCTION public.update_lot_status(p_lot_id UUID, p_status TEXT)
   RETURNS void AS $$
   BEGIN
+      -- AUTHORIZATION CHECK: In a real app, you'd check a 'roles' table or 'app_metadata'
+      -- For this MVP, we'll use a placeholder check for 'is_admin' claim in JWT
+      -- or simply ensure the user is authenticated.
+      IF (auth.jwt() ->> 'is_admin')::boolean IS NOT TRUE THEN
+          RAISE EXCEPTION 'Unauthorized: Admin access required';
+      END IF;
+
       UPDATE public.lots
       SET status = p_status, updated_at = now()
       WHERE id = p_lot_id;
   END;
-  $$ LANGUAGE plpgsql;
+  $$ LANGUAGE plpgsql SECURITY DEFINER;
 
 COMMIT;
