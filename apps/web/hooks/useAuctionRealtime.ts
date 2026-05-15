@@ -30,7 +30,18 @@ export function useAuctionRealtime(lotId: string, userId?: string) {
   const [connectionState, setConnectionState] = useState<ConnectionState>('INITIALIZING');
   const [onlineBidders, setOnlineBidders] = useState(0);
 
+  // Keep track of the latest data to avoid stale closures in callbacks
+  const lotRef = useRef<Lot | null>(null);
+  const bidsRef = useRef<Bid[]>([]);
   const channelRef = useRef<RealtimeChannel | null>(null);
+
+  useEffect(() => {
+    lotRef.current = lot;
+  }, [lot]);
+
+  useEffect(() => {
+    bidsRef.current = bids;
+  }, [bids]);
 
   // Fetch initial data
   useEffect(() => {
@@ -42,8 +53,14 @@ export function useAuctionRealtime(lotId: string, userId?: string) {
           supabase.from('bids').select('*').eq('lot_id', lotId).order('created_at', { ascending: false }).limit(10)
         ]);
 
-        if (lotRes.data) setLot(lotRes.data);
-        if (bidsRes.data) setBids(bidsRes.data);
+        if (lotRes.data) {
+          setLot(lotRes.data);
+          lotRef.current = lotRes.data;
+        }
+        if (bidsRes.data) {
+          setBids(bidsRes.data);
+          bidsRef.current = bidsRes.data;
+        }
       } catch (err) {
         console.error('Error fetching initial auction data:', err);
         setConnectionState('ERROR');
@@ -81,7 +98,7 @@ export function useAuctionRealtime(lotId: string, userId?: string) {
           setLot((currentLot) => {
             if (!currentLot) return newLot;
             // Optimistic update check: only update if data is newer
-            if (new Date(newLot.updated_at) <= new Date(currentLot.updated_at)) {
+            if (new Date(newLot.updated_at) < new Date(currentLot.updated_at)) {
               return currentLot;
             }
             return newLot;
@@ -99,6 +116,7 @@ export function useAuctionRealtime(lotId: string, userId?: string) {
         (payload) => {
           const newBid = payload.new as Bid;
           setBids((currentBids) => {
+            // Idempotency check: prevent duplicate bid events
             if (currentBids.some((b) => b.id === newBid.id)) return currentBids;
             return [newBid, ...currentBids].slice(0, 10);
           });
@@ -127,13 +145,40 @@ export function useAuctionRealtime(lotId: string, userId?: string) {
   }, [lotId, userId]);
 
   const placeBid = useCallback(async (bidderId: string, amount: number) => {
+    // Optimistic Update
+    const previousLot = lotRef.current;
+    const previousBids = [...bidsRef.current];
+
+    if (previousLot) {
+      setLot({
+        ...previousLot,
+        current_bid_amount: amount,
+        highest_bidder_id: bidderId,
+        updated_at: new Date().toISOString()
+      });
+    }
+
+    const optimisticBid: Bid = {
+      id: Math.random().toString(), // Temporary ID
+      lot_id: lotId,
+      bidder_id: bidderId,
+      amount: amount,
+      created_at: new Date().toISOString(),
+    };
+    setBids(current => [optimisticBid, ...current].slice(0, 10));
+
     const { error } = await supabase.rpc('place_bid', {
       p_lot_id: lotId,
       p_bidder_id: bidderId,
       p_amount: amount,
     });
 
-    if (error) throw error;
+    if (error) {
+      // Rollback on error
+      setLot(previousLot);
+      setBids(previousBids);
+      throw error;
+    }
   }, [lotId]);
 
   const updateStatus = useCallback(async (status: Lot['status']) => {
